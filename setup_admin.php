@@ -10,13 +10,15 @@ $role = 'admin';
 $status = 'active';
 
 // Remove any existing user with this phone number to avoid duplicate errors
-$conn->query("DELETE FROM USERS WHERE phone_number = '$phone'");
+$conn->query("DELETE FROM users WHERE phone_number = '$phone'");
 
 // Insert the new admin account
-$stmt = $conn->prepare("INSERT INTO USERS (full_name, phone_number, password, role, account_status) VALUES (?, ?, ?, ?, ?)");
+$stmt = $conn->prepare("INSERT INTO users (full_name, phone_number, password, role, account_status) VALUES (?, ?, ?, ?, ?)");
 $stmt->bind_param("sssss", $full_name, $phone, $hashed_password, $role, $status);
 
 if ($stmt->execute()) {
+    $new_admin_id = $conn->insert_id;
+    $conn->query("INSERT INTO administrators (user_id) VALUES ($new_admin_id)");
     echo "<div style='font-family: Arial, sans-serif; text-align: center; margin-top: 50px;'>";
     echo "<h2 style='color: #2E7D32;'>Admin Account Successfully Created!</h2>";
     echo "<p><strong>Phone:</strong> $phone</p>";

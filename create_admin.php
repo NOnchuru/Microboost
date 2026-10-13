@@ -8,9 +8,9 @@ $role = "admin";
 $status = "active";
 
 // Clear any existing test account with this phone number
-$conn->query("DELETE FROM USERS WHERE phone_number = '$phone'");
+$conn->query("DELETE FROM users WHERE phone_number = '$phone'");
 
-$stmt = $conn->prepare("INSERT INTO USERS (full_name, phone_number, password, role, account_status) VALUES (?, ?, ?, ?, ?)");
+$stmt = $conn->prepare("INSERT INTO users (full_name, phone_number, password, role, account_status) VALUES (?, ?, ?, ?, ?)");
 $stmt->bind_param("sssss", $full_name, $phone, $password, $role, $status);
 
 if ($stmt->execute()) {
