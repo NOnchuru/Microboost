@@ -49,7 +49,7 @@ $farmer = $conn->query("SELECT * FROM farmers WHERE id=$farmer_id")->fetch_assoc
                             <div class="col-md-6"><label class="form-label">County</label><input class="form-control" name="county" value="<?php echo h($farmer['county']); ?>" required></div>
                             <div class="col-md-6"><label class="form-label">Primary Crop</label><input class="form-control" name="primary_crop" value="<?php echo h($farmer['primary_crop']); ?>" required></div>
                             <div class="col-md-6"><label class="form-label">Farm Size (acres)</label><input type="number" step="0.01" class="form-control" name="farm_size_acres" value="<?php echo h($farmer['farm_size_acres']); ?>"></div>
-                            <div class="col-md-6"><label class="form-label">New Password <span class="text-muted small">(optional)</span></label><input type="password" class="form-control" name="password"></div>
+                            <div class="col-md-6"><label class="form-label">Password</label><div><a href="change_password.php" class="btn btn-outline-secondary w-100"><i class="fa-solid fa-key me-1"></i>Change password</a></div></div>
                         </div>
                         <button class="btn btn-agri w-100 mt-4" type="submit">Save Changes</button>
                     </form>

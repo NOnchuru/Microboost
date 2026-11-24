@@ -40,7 +40,7 @@ $farmerList = [];
 while ($f = $farmers->fetch_assoc()) $farmerList[] = $f;
 
 $devices = $conn->query(
-    "SELECT d.*, u.full_name farmer_name FROM iot_devices d
+    "SELECT d.*, " . DEVICE_SECS_SQL . " AS secs_since, u.full_name farmer_name FROM iot_devices d
      JOIN farmers f ON f.id = d.farmer_id JOIN users u ON u.id = f.user_id
      ORDER BY d.id DESC"
 );
@@ -58,7 +58,7 @@ $devices = $conn->query(
             <div class="table-responsive">
                 <table class="table table-hover align-middle mb-0">
                     <thead class="table-light">
-                        <tr><th>ID</th><th>MAC Address</th><th>Farmer</th><th>Installed</th><th>Status</th><th class="text-end">Actions</th></tr>
+                        <tr><th>ID</th><th>MAC Address</th><th>Farmer</th><th>Installed</th><th>Status</th><th>Last reading</th><th class="text-end">Actions</th></tr>
                     </thead>
                     <tbody>
                     <?php while ($d = $devices->fetch_assoc()): ?>
@@ -68,9 +68,10 @@ $devices = $conn->query(
                             <td><?php echo h($d['farmer_name']); ?></td>
                             <td><?php echo h($d['installation_date']); ?></td>
                             <td>
-                                <?php $sc = ['online'=>'success','offline'=>'secondary','maintenance'=>'warning text-dark'][$d['status']] ?? 'secondary'; ?>
-                                <span class="badge bg-<?php echo $sc; ?>"><?php echo h($d['status']); ?></span>
+                                <?php $ds = device_status($d['status'], $d['secs_since']); ?>
+                                <span class="badge <?php echo $ds['class']; ?>"><?php echo h($ds['label']); ?></span>
                             </td>
+                            <td class="small text-muted"><?php echo h(secs_ago($d['secs_since'])); ?></td>
                             <td class="text-end">
                                 <button class="btn btn-sm btn-outline-primary" onclick='openEdit(<?php echo json_encode($d); ?>)'><i class="fa-solid fa-pen"></i></button>
                                 <a href="admin_devices.php?delete=<?php echo $d['id']; ?>" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove this device?');"><i class="fa-solid fa-trash"></i></a>

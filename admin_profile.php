@@ -39,7 +39,7 @@ if (!$admin) { $conn->query("INSERT INTO administrators (user_id) VALUES ($uid)"
                         <div class="mb-3"><label class="form-label">Full Name</label><input class="form-control" name="full_name" value="<?php echo h($user['full_name']); ?>" required></div>
                         <div class="mb-3"><label class="form-label">Phone</label><input class="form-control" name="phone_number" value="<?php echo h($user['phone_number']); ?>" required></div>
                         <div class="mb-3"><label class="form-label">Department</label><input class="form-control" name="department" value="<?php echo h($admin['department'] ?? ''); ?>"></div>
-                        <div class="mb-3"><label class="form-label">New Password <span class="text-muted small">(optional)</span></label><input type="password" class="form-control" name="password"></div>
+                        <div class="mb-3"><label class="form-label">Password</label><div><a href="change_password.php" class="btn btn-outline-secondary w-100"><i class="fa-solid fa-key me-1"></i>Change password</a></div></div>
                         <button class="btn btn-agri w-100" type="submit">Save Changes</button>
                     </form>
                 </div>

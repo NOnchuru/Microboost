@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once 'includes/db_connect.php';
+require_once 'includes/functions.php';
 
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $full_name = trim($_POST['full_name']);
@@ -10,6 +11,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
     if (!in_array($role, ['farmer', 'loan_officer'])) {
         header("Location: register.php?error=" . urlencode("Invalid role selected."));
+        exit();
+    }
+    if (!valid_phone($phone)) {
+        header("Location: register.php?error=" . urlencode("Enter a valid Kenyan phone number, e.g. 0712345678 or +254712345678."));
+        exit();
+    }
+    if (($_POST['confirm_password'] ?? '') !== $password_plain) {
+        header("Location: register.php?error=" . urlencode("The two passwords do not match."));
         exit();
     }
     if (strlen($password_plain) < 6) {
@@ -38,7 +47,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         if ($role === 'farmer') {
             $county = trim($_POST['county'] ?? '') ?: 'Unspecified';
             $primary_crop = trim($_POST['primary_crop'] ?? '') ?: 'Unspecified';
-            $farm_size = ($_POST['farm_size_acres'] !== '' ) ? (float)$_POST['farm_size_acres'] : null;
+            $farm_size = (($_POST['farm_size_acres'] ?? '') !== '') ? (float)$_POST['farm_size_acres'] : null;
 
             $stmt2 = $conn->prepare("INSERT INTO farmers (user_id, county, primary_crop, farm_size_acres) VALUES (?, ?, ?, ?)");
             $stmt2->bind_param("issd", $user_id, $county, $primary_crop, $farm_size);

@@ -23,7 +23,14 @@ $smsStats = $conn->query("SELECT delivery_status, COUNT(*) c FROM sms_delivery_l
 ?>
 <div class="container-fluid bg-light py-4">
 <div class="container-fluid px-4">
-    <h2 class="fw-bold mb-4"><i class="fa-solid fa-chart-column me-2"></i>System Reports</h2>
+    <div class="d-flex justify-content-between align-items-center flex-wrap mb-4">
+        <h2 class="fw-bold m-0"><i class="fa-solid fa-chart-column me-2"></i>System Reports</h2>
+        <div class="d-flex gap-2 flex-wrap">
+            <a href="export.php?type=farmers" class="btn btn-sm btn-outline-success"><i class="fa-solid fa-file-csv me-1"></i>Farmers CSV</a>
+            <a href="export.php?type=all_readings" class="btn btn-sm btn-outline-success"><i class="fa-solid fa-file-csv me-1"></i>Readings CSV</a>
+            <a href="export.php?type=all_users" class="btn btn-sm btn-outline-success"><i class="fa-solid fa-file-csv me-1"></i>Users CSV</a>
+        </div>
+    </div>
 
     <div class="row g-3 mb-4">
         <?php

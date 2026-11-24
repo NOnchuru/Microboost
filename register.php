@@ -13,7 +13,7 @@
                     <?php if (isset($_GET['error'])): ?>
                         <div class="alert alert-danger"><?php echo h($_GET['error']); ?></div>
                     <?php endif; ?>
-                    <form action="process_register.php" method="POST">
+                    <form action="process_register.php" method="POST" onsubmit="if (document.getElementById('pw1').value !== document.getElementById('pw2').value) { alert('The two passwords do not match.'); return false; }">
                         <div class="row g-3">
                             <div class="col-md-6">
                                 <label class="form-label">Full Name</label>
@@ -21,7 +21,7 @@
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label">Phone Number</label>
-                                <input type="text" name="phone_number" class="form-control" placeholder="+254700000000" required>
+                                <input type="text" name="phone_number" class="form-control" placeholder="0712345678 or +254712345678" pattern="^(\+254|0)[17][0-9]{8}$" title="Kenyan mobile number, e.g. 0712345678 or +254712345678" required>
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label">Account Role</label>
@@ -31,8 +31,12 @@
                                 </select>
                             </div>
                             <div class="col-md-6">
-                                <label class="form-label">Password</label>
-                                <input type="password" name="password" class="form-control" required>
+                                <label class="form-label">Password <span class="text-muted small">(min. 6 characters)</span></label>
+                                <input type="password" name="password" id="pw1" class="form-control" minlength="6" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Confirm Password</label>
+                                <input type="password" name="confirm_password" id="pw2" class="form-control" required>
                             </div>
                         </div>
 

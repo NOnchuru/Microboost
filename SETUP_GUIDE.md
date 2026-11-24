@@ -23,11 +23,12 @@ sensors/IoT hardware with free software instead of waiting for physical parts.
      `microboost.sql` file (in this zip), click **Go**
 5. **Check `includes/db_connect.php`** matches your MySQL credentials. XAMPP
    defaults are usually fine as-is (user `root`, no password).
-6. **Create your admin account:** visit
-   http://localhost/microboost/setup_admin.php
-   This creates one admin login (check the page for the generated phone
-   number/password) and deletes itself from the login flow afterwards —
-   it's safe to leave the file, but don't expose it on a public server.
+6. **Log in as admin.** The database file already contains an admin account:
+   phone `+254700000000`, password `admin123`. Change that password straight away
+   (Profile, then Change password). The old `setup_admin.php` and `create_admin.php`
+   pages have been removed for security. If you still have them in your
+   `htdocs\microboost` folder from an earlier copy, **delete both files by hand**,
+   because copying a new version over the old one does not remove them.
 7. **Open the app:** http://localhost/microboost/index.php
    - Register a farmer and a loan officer account from the Sign Up page
    - Log in as admin, go to **Approvals**, and approve the new farmer
@@ -196,3 +197,90 @@ the internals, not any of the pages that call them.
 Deleting a user cascades to everything linked to it (farmer row, devices,
 seasons, readings, scores, advisories, SMS logs, reports), as defined by the
 foreign keys in your schema.
+
+---
+
+## 7. Health thresholds and notifications (updated)
+
+`includes/functions.php` now has a configurable threshold table:
+
+- `get_thresholds($crop)`: healthy range, warning range and penalty per measure, with optional per-crop overrides (maize and tea are examples only, not researched values).
+- `get_status_cutoffs()`: score cutoffs (75+ Healthy, 45-74 Monitor, below 45 Critical).
+- `classify_crop_health($moisture, $temp, $humidity, $crop)` returns status, score, confidence, reasons and a `notify` flag.
+
+`api/sensor_data.php` creates an advisory (with the reasons) and logs an SMS when `notify` is set.
+Critical readings always alert; other alerts are limited to one per farmer every 6 hours.
+The API reply now also includes `score` and `reasons`.
+
+---
+
+## 8. On-screen guidance for new users (updated)
+
+- **Guide page** (`health_guide.php`, "Guide" in every menu, open to visitors without login): colour-coded healthy / watch / danger ranges for each measurement, how the score becomes a label, per-crop ranges, worked examples, and a live "try it yourself" calculator.
+- **Farmer dashboard:** a "Getting started" checklist (season, device, first reading, score, advisory) that highlights the next step, plus the healthy ranges for the active crop and the latest reading's status with the reasons.
+- **Sensor Data page:** healthy ranges for the selected crop above the table, the reason under every non-healthy label, and a Log Reading form that shows the range under each box and previews the label as you type.
+- **Validation:** impossible values (moisture or humidity outside 0-100 %, temperature outside -20 to 60 C) are rejected by the form and by the API (HTTP 422).
+- All ranges come from `get_thresholds()` / `get_crop_overrides()` in `includes/functions.php`. Change them there and every page, the preview and the classifier update together.
+
+## 9. Simulator defaults
+`simulator/simulate.py` now points at `http://localhost/microboost` and the device `AA:BB:CC:44:55:66`. Register that MAC under your farmer's Devices page before running it from the `simulator` folder: `python simulate.py --interval 2`.
+
+
+---
+
+## 10. Latest additions (Batch 1)
+
+No database change was needed, so do **not** re-import the SQL.
+
+| Feature | Where |
+|---|---|
+| Credit score updates by itself when a reading arrives, is edited or deleted | automatic |
+| Device status from real activity (online / offline / maintenance) and "last reading" time | Farmer Devices, Admin Devices, Admin dashboard |
+| Auto-refresh switch (bottom right) | Sensor Data, farmer / lender / admin dashboards |
+| Demo data loader and reset | Admin menu, **Demo** |
+| Print / Save as PDF button inside every report, richer summary | Lender Reports (use the refresh arrow on older reports) |
+| CSV export | Sensor Data, Credit Score, Lender dashboard, Admin Reports |
+| Alert cards: Critical readings in 24 h, offline devices | Admin and Lender dashboards |
+| Phone format check and password confirmation at sign-up | Sign Up |
+| Change password (asks for the current password) | Profile pages |
+
+**Device status rule:** a device is *online* if it sent a reading in the last
+`DEVICE_OFFLINE_MINUTES` (60, set in `includes/functions.php`); otherwise *offline*.
+*Maintenance* is a manual setting and is never overwritten by incoming readings.
+For the simulator demo, 60 minutes is fine; for a real deployment sending every
+15 minutes you may want a smaller value.
+
+**Demo data:** Admin, **Demo**, **Load demo data** creates `Demo Farmer` (phone `0799000001`)
+and `Demo Officer` (phone `0799000002`), password `demo1234`, with 42 readings over 7 days
+(healthy, then a dry spell reaching Critical, then recovery), advisories and a score.
+**Reset** removes only those two accounts and what belongs to them.
+Because the demo farmer already has 42 readings, a short simulator drought barely moves
+the *score* (it is an average over the season). The Critical readings, alerts and
+advisories show the drought immediately. To watch a score fall, use a new farmer.
+
+**Score note:** the score is recalculated from all readings in the season, so it moves
+quickly for a new season and slowly for a long one. That is by design.
+
+---
+
+## 4. Gemini advisories (optional)
+
+Advisories can be written by Google Gemini. The rule engine still decides the crop health
+label and the score; Gemini only turns that result into a short, plain message. Only the
+crop name, the three readings and the rule reasons are sent. No names or phone numbers are.
+
+1. Create a free key at https://aistudio.google.com/apikey
+2. Open `includes/config.php` and paste the key into `GEMINI_API_KEY`.
+3. Check the model name in Google AI Studio and update `GEMINI_MODEL` if it has changed.
+4. Log in as admin, open **Demo & Gemini** in the sidebar and press **Test Gemini connection**.
+
+If there is no key, no internet, or Gemini is slow or returns an error, MicroBoost
+automatically uses its built-in templates instead, so the system never stops producing
+advisories. Failures are written to the Apache error log (`C:\xampp\apache\logs\error.log`).
+Do not share `includes/config.php` once it holds your key.
+
+## 5. Admin layout
+
+All administrator pages now share one layout (`includes/header.php` and `includes/footer.php`):
+a slim top bar, a grouped sidebar, and the styles in `assets/admin.css`. The sidebar becomes
+a slide-out menu on narrow screens.

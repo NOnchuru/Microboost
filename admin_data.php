@@ -144,6 +144,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($tab === 'readings') {
             $status = upsert_classification($conn, $id, (float)$vals['soil_moisture'], (float)$vals['temperature'], (float)$vals['humidity']);
             $msg = "Reading saved and re-classified as $status.";
+            $sf = $conn->query("SELECT farmer_id FROM growing_seasons WHERE id=" . (int)$vals['season_id'])->fetch_assoc();
+            if ($sf) update_credit_score($conn, (int)$sf['farmer_id'], (int)$vals['season_id']);
         }
         if ($tab === 'scores') {
             $s = (int)$vals['score_value'];
@@ -172,7 +174,12 @@ if (isset($_GET['delete'])) {
         $r = $conn->query("SELECT report_path FROM agri_credit_reports WHERE id=$id")->fetch_assoc();
         if ($r && file_exists(__DIR__ . '/' . $r['report_path'])) @unlink(__DIR__ . '/' . $r['report_path']);
     }
+    $affected = null;
+    if ($tab === 'readings') {
+        $affected = $conn->query("SELECT sr.season_id, gs.farmer_id FROM sensor_readings sr JOIN growing_seasons gs ON gs.id=sr.season_id WHERE sr.id=$id")->fetch_assoc();
+    }
     $conn->query("DELETE FROM `$table` WHERE id=$id");
+    if ($affected) update_credit_score($conn, (int)$affected['farmer_id'], (int)$affected['season_id']);
     flash_set('success', 'Record deleted.');
     header("Location: $self");
     exit();

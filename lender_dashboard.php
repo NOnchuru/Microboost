@@ -6,7 +6,9 @@ $search = trim($_GET['q'] ?? '');
 $sql = "SELECT f.*, u.full_name, u.phone_number,
         (SELECT score_value FROM agri_credit_scores WHERE farmer_id=f.id ORDER BY last_updated DESC LIMIT 1) latest_score,
         (SELECT tier FROM agri_credit_scores WHERE farmer_id=f.id ORDER BY last_updated DESC LIMIT 1) latest_tier,
-        (SELECT COUNT(*) FROM iot_devices WHERE farmer_id=f.id) device_count
+        (SELECT COUNT(*) FROM iot_devices WHERE farmer_id=f.id) device_count,
+        EXISTS (SELECT 1 FROM crop_health_classifications chc JOIN sensor_readings sr ON sr.id=chc.reading_id JOIN growing_seasons gs ON gs.id=sr.season_id
+                WHERE gs.farmer_id=f.id AND chc.health_status='Critical' AND sr.recorded_at > (NOW() - INTERVAL 24 HOUR)) recent_critical
         FROM farmers f JOIN users u ON u.id = f.user_id
         WHERE u.account_status='active'";
 if ($search) {
@@ -15,12 +17,23 @@ if ($search) {
 }
 $sql .= " ORDER BY latest_score DESC";
 $farmers = $conn->query($sql);
+$farmerRows = [];
+while ($fr = $farmers->fetch_assoc()) $farmerRows[] = $fr;
+$totalShown = count($farmerRows);
+$criticalCount = count(array_filter($farmerRows, fn($r) => $r['recent_critical']));
+$unscored = count(array_filter($farmerRows, fn($r) => $r['latest_score'] === null));
 ?>
 <div class="container-fluid bg-light py-4">
     <div class="container">
         <h2 class="fw-bold mb-4"><i class="fa-solid fa-building-columns text-primary me-2"></i>Lender Portal</h2>
 
         <?php render_flashes(); ?>
+
+        <div class="row g-3 mb-4">
+            <div class="col-md-4"><div class="card border-0 shadow-sm p-3"><p class="text-muted mb-1 text-uppercase small fw-bold">Farmers listed</p><h3 class="fw-bold mb-0"><?php echo $totalShown; ?></h3></div></div>
+            <div class="col-md-4"><div class="card border-0 shadow-sm p-3 <?php echo $criticalCount ? 'border-start border-danger border-4' : ''; ?>"><p class="text-muted mb-1 text-uppercase small fw-bold">Critical reading in last 24 h</p><h3 class="fw-bold mb-0 <?php echo $criticalCount ? 'text-danger' : ''; ?>"><?php echo $criticalCount; ?></h3></div></div>
+            <div class="col-md-4"><div class="card border-0 shadow-sm p-3"><p class="text-muted mb-1 text-uppercase small fw-bold">Not yet scored</p><h3 class="fw-bold mb-0"><?php echo $unscored; ?></h3></div></div>
+        </div>
 
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-body">
@@ -33,7 +46,10 @@ $farmers = $conn->query($sql);
 
         <div class="card border-0 shadow-sm">
             <div class="card-header bg-white py-3">
-                <h5 class="mb-0 fw-bold">Farmer Profiles &amp; Creditworthiness</h5>
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0 fw-bold">Farmer Profiles &amp; Creditworthiness</h5>
+                    <a href="export.php?type=farmers" class="btn btn-sm btn-outline-success"><i class="fa-solid fa-file-csv me-1"></i>Export CSV</a>
+                </div>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
@@ -42,12 +58,12 @@ $farmers = $conn->query($sql);
                             <tr><th>Farmer</th><th>County</th><th>Primary Crop</th><th>AgroCreditScore</th><th>IoT Devices</th><th>Action</th></tr>
                         </thead>
                         <tbody>
-                        <?php if ($farmers->num_rows === 0): ?>
+                        <?php if ($totalShown === 0): ?>
                             <tr><td colspan="6" class="text-center text-muted py-4">No matching farmers found.</td></tr>
                         <?php endif; ?>
-                        <?php while ($f = $farmers->fetch_assoc()): ?>
+                        <?php foreach ($farmerRows as $f): ?>
                             <tr>
-                                <td><span class="fw-bold"><?php echo h($f['full_name']); ?></span><br><span class="small text-muted"><?php echo h($f['phone_number']); ?></span></td>
+                                <td><span class="fw-bold"><?php echo h($f['full_name']); ?></span><?php if ($f['recent_critical']): ?> <span class="badge bg-danger">Critical (24 h)</span><?php endif; ?><br><span class="small text-muted"><?php echo h($f['phone_number']); ?></span></td>
                                 <td><?php echo h($f['county']); ?></td>
                                 <td><?php echo h($f['primary_crop']); ?></td>
                                 <td>
@@ -61,7 +77,7 @@ $farmers = $conn->query($sql);
                                     <a href="lender_reports.php?generate=<?php echo $f['id']; ?>" class="btn btn-sm btn-outline-danger"><i class="fa-regular fa-file-pdf me-1"></i>Report</a>
                                 </td>
                             </tr>
-                        <?php endwhile; ?>
+                        <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
@@ -70,4 +86,6 @@ $farmers = $conn->query($sql);
     </div>
 </div>
 
+<script src="assets/autorefresh.js"></script>
+<script>initAutoRefresh({seconds: 10});</script>
 <?php include 'includes/footer.php'; ?>

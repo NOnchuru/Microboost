@@ -23,12 +23,14 @@ if (isset($_GET['generate'])) {
         )->fetch_assoc();
 
         $health_status = $latestReading['health_status'] ?? 'Monitor';
-        $text = generate_advisory_text(
+        $adv = generate_advisory(
             $health_status,
             $season['crop_type'],
             $latestReading['soil_moisture'] ?? null,
-            $latestReading['temperature'] ?? null
+            $latestReading['temperature'] ?? null,
+            $latestReading['humidity'] ?? null
         );
+        $text = $adv['text'];
 
         $stmt = $conn->prepare("INSERT INTO advisories (farmer_id, advisory_text) VALUES (?, ?)");
         $stmt->bind_param("is", $farmer_id, $text);
@@ -36,7 +38,7 @@ if (isset($_GET['generate'])) {
         $advisory_id = $conn->insert_id;
 
         send_sms_advisory($conn, $advisory_id, $user['phone_number'], $text);
-        flash_set('success', 'New AI advisory generated and SMS sent (simulated).');
+        flash_set('success', ($adv['source'] === 'gemini' ? 'New advisory written by Gemini' : 'New advisory generated from templates') . ' and SMS sent (simulated).');
     } else {
         flash_set('error', 'Invalid season.');
     }
@@ -79,7 +81,7 @@ $advisories = $conn->query(
                     <div class="d-flex justify-content-between align-items-center small text-muted">
                         <span><?php echo h($a['generated_at']); ?> <a href="farmer_advisories.php?delete=<?php echo $a['id']; ?>" class="text-danger ms-2" onclick="return confirm('Delete this advisory?');"><i class="fa-solid fa-trash"></i></a></span>
                         <?php if ($a['delivery_status']): ?>
-                            <span class="badge bg-success"><i class="fa-solid fa-sms me-1"></i><?php echo h($a['delivery_status']); ?></span>
+                            <span class="badge bg-<?php echo $a['delivery_status'] === 'Failed' ? 'danger' : ($a['delivery_status'] === 'Pending' ? 'warning text-dark' : 'success'); ?>"><i class="fa-solid fa-sms me-1"></i><?php echo h($a['delivery_status']); ?></span>
                         <?php endif; ?>
                     </div>
                 </div>

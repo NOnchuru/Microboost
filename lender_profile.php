@@ -47,7 +47,7 @@ $officer = $conn->query("SELECT * FROM loan_officers WHERE id=$officer_id")->fet
                             <div class="col-md-6"><label class="form-label">Phone</label><input class="form-control" name="phone_number" value="<?php echo h($user['phone_number']); ?>" required></div>
                             <div class="col-md-6"><label class="form-label">SACCO Name</label><input class="form-control" name="sacco_name" value="<?php echo h($officer['sacco_name']); ?>" required></div>
                             <div class="col-md-6"><label class="form-label">Employee No.</label><input class="form-control" name="employee_no" value="<?php echo h($officer['employee_no']); ?>" required></div>
-                            <div class="col-md-6"><label class="form-label">New Password <span class="text-muted small">(optional)</span></label><input type="password" class="form-control" name="password"></div>
+                            <div class="col-md-6"><label class="form-label">Password</label><div><a href="change_password.php" class="btn btn-outline-secondary w-100"><i class="fa-solid fa-key me-1"></i>Change password</a></div></div>
                         </div>
                         <button class="btn btn-agri w-100 mt-4" type="submit">Save Changes</button>
                     </form>

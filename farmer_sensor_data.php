@@ -11,6 +11,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_r
     $temperature = (float)$_POST['temperature'];
     $humidity = (float)$_POST['humidity'];
 
+    $problems = validate_reading($soil_moisture, $temperature, $humidity);
+    if ($problems) {
+        flash_set('error', 'Reading rejected: ' . implode('; ', $problems) . '.');
+        header("Location: farmer_sensor_data.php");
+        exit();
+    }
+
     // verify device & season belong to this farmer
     $ownsDevice = $conn->query("SELECT id FROM iot_devices WHERE id=$device_id AND farmer_id=$farmer_id")->num_rows > 0;
     $ownsSeason = $conn->query("SELECT id FROM growing_seasons WHERE id=$season_id AND farmer_id=$farmer_id")->num_rows > 0;
@@ -22,14 +29,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_r
         $reading_id = $conn->insert_id;
 
         // Auto-run crop health classification (simulated ML Flask service)
-        $result = classify_crop_health($soil_moisture, $temperature, $humidity);
+        $cropRow = $conn->query("SELECT crop_type FROM growing_seasons WHERE id=$season_id")->fetch_assoc();
+        $result = classify_crop_health($soil_moisture, $temperature, $humidity, $cropRow['crop_type'] ?? null);
         $stmt2 = $conn->prepare("INSERT INTO crop_health_classifications (reading_id, health_status) VALUES (?, ?)");
         $stmt2->bind_param("is", $reading_id, $result['status']);
         $stmt2->execute();
 
-        $conn->query("UPDATE iot_devices SET status='online' WHERE id=$device_id");
+        $conn->query("UPDATE iot_devices SET status='online' WHERE id=$device_id AND status<>'maintenance'");
+        update_credit_score($conn, $farmer_id, $season_id);
 
-        flash_set('success', "Reading recorded. Auto-classified as: {$result['status']} (confidence {$result['confidence']}).");
+        $why = $result['reasons'] ? ' Why: ' . implode('; ', $result['reasons']) . '.' : ' All values are in the healthy ranges.';
+        flash_set('success', "Reading recorded. Classified as {$result['status']} (score {$result['score']}/100)." . $why);
     } else {
         flash_set('error', 'Invalid device or season selection.');
     }
@@ -41,12 +51,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_r
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'edit_reading') {
     $rid = (int)$_POST['reading_id'];
     $m = (float)$_POST['soil_moisture']; $t = (float)$_POST['temperature']; $hu = (float)$_POST['humidity'];
+    $problems = validate_reading($m, $t, $hu);
+    if ($problems) {
+        flash_set('error', 'Reading rejected: ' . implode('; ', $problems) . '.');
+        header("Location: farmer_sensor_data.php");
+        exit();
+    }
     $owns = $conn->query("SELECT sr.id FROM sensor_readings sr JOIN growing_seasons gs ON gs.id=sr.season_id WHERE sr.id=$rid AND gs.farmer_id=$farmer_id")->num_rows > 0;
     if ($owns) {
         $st = $conn->prepare("UPDATE sensor_readings SET soil_moisture=?, temperature=?, humidity=? WHERE id=?");
         $st->bind_param("dddi", $m, $t, $hu, $rid);
         $st->execute();
-        $c = classify_crop_health($m, $t, $hu);
+        $cr = $conn->query("SELECT gs.crop_type, sr.season_id FROM sensor_readings sr JOIN growing_seasons gs ON gs.id=sr.season_id WHERE sr.id=$rid")->fetch_assoc();
+        $c = classify_crop_health($m, $t, $hu, $cr['crop_type'] ?? null);
         $ex = $conn->query("SELECT id FROM crop_health_classifications WHERE reading_id=$rid")->fetch_assoc();
         if ($ex) {
             $st2 = $conn->prepare("UPDATE crop_health_classifications SET health_status=?, analyzed_at=NOW() WHERE id=?");
@@ -56,6 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'edit_
             $st2->bind_param("is", $rid, $c['status']);
         }
         $st2->execute();
+        update_credit_score($conn, $farmer_id, (int)($cr['season_id'] ?? 0));
         flash_set('success', "Reading updated and re-classified as {$c['status']}.");
     } else {
         flash_set('error', 'Reading not found.');
@@ -66,38 +84,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'edit_
 
 if (isset($_GET['delete'])) {
     $id = (int)$_GET['delete'];
+    $seasonRow = $conn->query("SELECT sr.season_id FROM sensor_readings sr JOIN growing_seasons gs ON gs.id = sr.season_id WHERE sr.id=$id AND gs.farmer_id=$farmer_id")->fetch_assoc();
     $conn->query(
         "DELETE sr FROM sensor_readings sr JOIN growing_seasons gs ON gs.id = sr.season_id
          WHERE sr.id=$id AND gs.farmer_id=$farmer_id"
     );
+    if ($seasonRow) update_credit_score($conn, $farmer_id, (int)$seasonRow['season_id']);
     flash_set('success', 'Reading deleted.');
     header("Location: farmer_sensor_data.php");
     exit();
 }
 
+// Remove old readings (keeps the newest 20) so the page and charts only show recent data
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'purge_old') {
+    $keep = [];
+    $k = $conn->query("SELECT sr.id FROM sensor_readings sr JOIN growing_seasons gs ON gs.id=sr.season_id WHERE gs.farmer_id=$farmer_id ORDER BY sr.recorded_at DESC, sr.id DESC LIMIT 20");
+    while ($row = $k->fetch_assoc()) $keep[] = (int)$row['id'];
+    $keepSql = $keep ? implode(',', $keep) : '0';
+    $affected = [];
+    $q = $conn->query("SELECT DISTINCT sr.season_id FROM sensor_readings sr JOIN growing_seasons gs ON gs.id=sr.season_id WHERE gs.farmer_id=$farmer_id AND sr.id NOT IN ($keepSql)");
+    while ($row = $q->fetch_assoc()) $affected[] = (int)$row['season_id'];
+    $conn->query("DELETE chc FROM crop_health_classifications chc JOIN sensor_readings sr ON sr.id=chc.reading_id JOIN growing_seasons gs ON gs.id=sr.season_id WHERE gs.farmer_id=$farmer_id AND sr.id NOT IN ($keepSql)");
+    $conn->query("DELETE sr FROM sensor_readings sr JOIN growing_seasons gs ON gs.id=sr.season_id WHERE gs.farmer_id=$farmer_id AND sr.id NOT IN ($keepSql)");
+    foreach ($affected as $sid) update_credit_score($conn, $farmer_id, $sid);
+    flash_set('success', 'Older readings removed. The newest ' . count($keep) . ' were kept.');
+    header("Location: farmer_sensor_data.php");
+    exit();
+}
+
 $season_id = isset($_GET['season_id']) ? (int)$_GET['season_id'] : null;
+$range = $_GET['range'] ?? 'latest';
+if (!in_array($range, ['latest', '24h', '7d'], true)) $range = 'latest';
+
 $devices = $conn->query("SELECT * FROM iot_devices WHERE farmer_id=$farmer_id");
 $deviceList = []; while ($d = $devices->fetch_assoc()) $deviceList[] = $d;
 
 $seasons = $conn->query("SELECT * FROM growing_seasons WHERE farmer_id=$farmer_id ORDER BY start_date DESC");
 $seasonList = []; while ($s = $seasons->fetch_assoc()) $seasonList[] = $s;
 
-$sql = "SELECT sr.*, chc.health_status FROM sensor_readings sr
+$sql = "SELECT sr.*, chc.health_status, gs.crop_type FROM sensor_readings sr
         JOIN growing_seasons gs ON gs.id = sr.season_id
         LEFT JOIN crop_health_classifications chc ON chc.reading_id = sr.id
         WHERE gs.farmer_id = $farmer_id";
 if ($season_id) $sql .= " AND sr.season_id = $season_id";
-$sql .= " ORDER BY sr.recorded_at DESC LIMIT 100";
+if ($range === '24h') $sql .= " AND sr.recorded_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)";
+if ($range === '7d')  $sql .= " AND sr.recorded_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)";
+$sql .= " ORDER BY sr.recorded_at DESC, sr.id DESC LIMIT " . ($range === 'latest' ? 10 : 40);
 $readings = $conn->query($sql);
 $readingRows = []; while ($r = $readings->fetch_assoc()) $readingRows[] = $r;
 $chartData = array_reverse($readingRows);
+$totalStored = (int)$conn->query("SELECT COUNT(*) c FROM sensor_readings sr JOIN growing_seasons gs ON gs.id=sr.season_id WHERE gs.farmer_id=$farmer_id")->fetch_assoc()['c'];
+$latest = $readingRows[0] ?? null;
+$latestCls = $latest ? classify_crop_health($latest['soil_moisture'], $latest['temperature'], $latest['humidity'], $latest['crop_type']) : null;
+$qs = function($r) use ($season_id) { return 'farmer_sensor_data.php?range=' . $r . ($season_id ? '&season_id=' . $season_id : ''); };
 ?>
-<div class="container my-5">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2 class="fw-bold m-0"><i class="fa-solid fa-droplet text-primary me-2"></i>Sensor Data & Trends</h2>
-        <?php if (count($deviceList) && count($seasonList)): ?>
-        <button class="btn btn-agri" data-bs-toggle="modal" data-bs-target="#readingModal"><i class="fa-solid fa-plus me-1"></i>Log Reading</button>
-        <?php endif; ?>
+<div class="container my-5" style="max-width:1000px">
+    <div class="d-flex justify-content-between align-items-end flex-wrap gap-2 mb-4">
+        <div>
+            <h2 class="fw-bold mb-1"><i class="fa-solid fa-droplet text-primary me-2"></i>Sensor Data</h2>
+            <div class="text-muted small">Live readings from your device, newest first.</div>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="export.php?type=my_readings" class="btn btn-outline-success btn-sm"><i class="fa-solid fa-file-csv me-1"></i>Export CSV</a>
+            <?php if (count($deviceList) && count($seasonList)): ?>
+            <button class="btn btn-agri btn-sm" data-bs-toggle="modal" data-bs-target="#readingModal"><i class="fa-solid fa-plus me-1"></i>Log Reading</button>
+            <?php endif; ?>
+        </div>
     </div>
     <?php render_flashes(); ?>
 
@@ -105,42 +157,91 @@ $chartData = array_reverse($readingRows);
         <div class="alert alert-warning">You need at least one <a href="farmer_devices.php">IoT device</a> and one <a href="farmer_seasons.php">growing season</a> before logging sensor readings.</div>
     <?php endif; ?>
 
-    <form class="row g-2 mb-3" method="GET">
-        <div class="col-md-4">
-            <select name="season_id" class="form-select" onchange="this.form.submit()">
-                <option value="">All Seasons</option>
+    <?php if ($latest): ?>
+    <div class="row g-3 mb-4">
+        <div class="col-6 col-lg-3"><div class="card border-0 shadow-sm text-center py-3 h-100"><div class="text-muted small">Soil moisture</div><div class="fs-3 fw-bold text-success"><?php echo h($latest['soil_moisture']); ?>%</div></div></div>
+        <div class="col-6 col-lg-3"><div class="card border-0 shadow-sm text-center py-3 h-100"><div class="text-muted small">Temperature</div><div class="fs-3 fw-bold text-danger"><?php echo h($latest['temperature']); ?>°C</div></div></div>
+        <div class="col-6 col-lg-3"><div class="card border-0 shadow-sm text-center py-3 h-100"><div class="text-muted small">Humidity</div><div class="fs-3 fw-bold text-primary"><?php echo h($latest['humidity']); ?>%</div></div></div>
+        <div class="col-6 col-lg-3"><div class="card border-0 shadow-sm text-center py-3 h-100"><div class="text-muted small">Status</div><div class="mt-1"><span class="badge <?php echo health_badge_class($latestCls['status']); ?> fs-6"><?php echo h($latestCls['status']); ?></span></div><div class="text-muted" style="font-size:.75rem"><?php echo date('d M, H:i', strtotime($latest['recorded_at'])); ?></div></div></div>
+    </div>
+    <?php endif; ?>
+
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+        <div class="btn-group btn-group-sm" role="group">
+            <a href="<?php echo $qs('latest'); ?>" class="btn <?php echo $range==='latest'?'btn-success':'btn-outline-success'; ?>">Latest 10</a>
+            <a href="<?php echo $qs('24h'); ?>" class="btn <?php echo $range==='24h'?'btn-success':'btn-outline-success'; ?>">Last 24 hours</a>
+            <a href="<?php echo $qs('7d'); ?>" class="btn <?php echo $range==='7d'?'btn-success':'btn-outline-success'; ?>">Last 7 days</a>
+        </div>
+        <form method="GET" class="d-flex gap-2">
+            <input type="hidden" name="range" value="<?php echo h($range); ?>">
+            <select name="season_id" class="form-select form-select-sm" onchange="this.form.submit()">
+                <option value="">All seasons</option>
                 <?php foreach ($seasonList as $s): ?>
-                    <option value="<?php echo $s['id']; ?>" <?php echo $season_id==$s['id']?'selected':''; ?>><?php echo h($s['crop_type']); ?> (started <?php echo h($s['start_date']); ?>)</option>
+                    <option value="<?php echo $s['id']; ?>" <?php echo $season_id==$s['id']?'selected':''; ?>><?php echo h($s['crop_type']); ?> (<?php echo h($s['start_date']); ?>)</option>
                 <?php endforeach; ?>
             </select>
-        </div>
-    </form>
+        </form>
+    </div>
 
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body">
-            <canvas id="trendChart" height="90"></canvas>
+            <div class="fw-bold mb-2">Trend</div>
+            <?php if (empty($chartData)): ?><div class="text-muted text-center py-4">No readings in this period.</div>
+            <?php else: ?><canvas id="trendChart" height="95"></canvas><?php endif; ?>
         </div>
     </div>
 
-    <div class="card border-0 shadow-sm">
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-hover align-middle mb-0">
-                    <thead class="table-light"><tr><th>Recorded At</th><th>Soil Moisture</th><th>Temp</th><th>Humidity</th><th>Health</th><th class="text-end">Actions</th></tr></thead>
-                    <tbody>
-                    <?php if (empty($readingRows)): ?><tr><td colspan="6" class="text-center text-muted py-4">No readings yet.</td></tr><?php endif; ?>
-                    <?php foreach ($readingRows as $r): ?>
-                        <tr>
-                            <td><?php echo h($r['recorded_at']); ?></td>
-                            <td><?php echo h($r['soil_moisture']); ?>%</td>
-                            <td><?php echo h($r['temperature']); ?>°C</td>
-                            <td><?php echo h($r['humidity']); ?>%</td>
-                            <td><?php if ($r['health_status']): ?><span class="badge <?php echo health_badge_class($r['health_status']); ?>"><?php echo h($r['health_status']); ?></span><?php else: ?><span class="text-muted small">pending</span><?php endif; ?></td>
-                            <td class="text-end"><button class="btn btn-sm btn-outline-primary" onclick='openEditReading(<?php echo json_encode(["id"=>$r["id"],"m"=>$r["soil_moisture"],"t"=>$r["temperature"],"h"=>$r["humidity"]]); ?>)'><i class="fa-solid fa-pen"></i></button> <a href="farmer_sensor_data.php?delete=<?php echo $r['id']; ?>" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete this reading?');"><i class="fa-solid fa-trash"></i></a></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
+    <div class="card border-0 shadow-sm mb-3">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+            <span class="fw-bold">Readings</span>
+            <?php if ($totalStored > 20): ?>
+            <form method="POST" class="m-0" onsubmit="return confirm('Remove all readings except the newest 20? This cannot be undone.');">
+                <input type="hidden" name="action" value="purge_old">
+                <button class="btn btn-sm btn-outline-danger"><i class="fa-solid fa-broom me-1"></i>Remove old readings (<?php echo number_format($totalStored - 20); ?>)</button>
+            </form>
+            <?php endif; ?>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light"><tr><th>Time</th><th>Soil</th><th>Temp</th><th>Humidity</th><th>Health</th><th class="text-end"></th></tr></thead>
+                <tbody>
+                <?php if (empty($readingRows)): ?><tr><td colspan="6" class="text-center text-muted py-4">No readings in this period.</td></tr><?php endif; ?>
+                <?php foreach ($readingRows as $r): ?>
+                    <tr>
+                        <td class="small"><?php echo date('d M, H:i', strtotime($r['recorded_at'])); ?></td>
+                        <td><?php echo h($r['soil_moisture']); ?>%</td>
+                        <td><?php echo h($r['temperature']); ?>°C</td>
+                        <td><?php echo h($r['humidity']); ?>%</td>
+                        <td><?php if ($r['health_status']): ?><span class="badge <?php echo health_badge_class($r['health_status']); ?>"><?php echo h($r['health_status']); ?></span>
+                            <?php else: ?><span class="text-muted small">pending</span><?php endif; ?></td>
+                        <td class="text-end text-nowrap"><button class="btn btn-sm btn-outline-primary" onclick='openEditReading(<?php echo json_encode(["id"=>$r["id"],"m"=>$r["soil_moisture"],"t"=>$r["temperature"],"h"=>$r["humidity"]]); ?>)'><i class="fa-solid fa-pen"></i></button> <a href="farmer_sensor_data.php?delete=<?php echo $r['id']; ?>" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete this reading?');"><i class="fa-solid fa-trash"></i></a></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="text-muted small mb-4">Showing <?php echo count($readingRows); ?> of <?php echo number_format($totalStored); ?> stored readings.</div>
+
+    <?php
+    $bannerCrop = null;
+    foreach ($seasonList as $s_) { if ($season_id && $s_['id'] == $season_id) $bannerCrop = $s_['crop_type']; }
+    if (!$bannerCrop) foreach ($seasonList as $s_) { if ($s_['status'] == 'active') { $bannerCrop = $s_['crop_type']; break; } }
+    $bannerTh = get_thresholds($bannerCrop);
+    ?>
+    <div class="card border-0 shadow-sm" style="border-left:4px solid var(--agri-green) !important;">
+        <div class="card-body py-3">
+            <div class="d-flex justify-content-between flex-wrap mb-2">
+                <strong><i class="fa-solid fa-circle-info text-success me-1"></i>Healthy ranges<?php echo $bannerCrop ? ' for ' . h($bannerCrop) : ''; ?></strong>
+                <a href="health_guide.php" class="small">Open the guide</a>
+            </div>
+            <div class="row g-2 small">
+                <?php foreach ($bannerTh as $bt): ?>
+                    <div class="col-md-4">
+                        <span class="fw-bold"><?php echo h($bt['label']); ?>:</span>
+                        <span class="badge bg-success"><?php echo $bt['ok'][0]; ?> to <?php echo $bt['ok'][1]; ?> <?php echo h($bt['unit']); ?></span>
+                    </div>
+                <?php endforeach; ?>
             </div>
         </div>
     </div>
@@ -161,15 +262,17 @@ $chartData = array_reverse($readingRows);
             </div>
             <div class="mb-3">
                 <label class="form-label">Season</label>
-                <select name="season_id" class="form-select" required>
-                    <?php foreach ($seasonList as $s): ?><option value="<?php echo $s['id']; ?>"><?php echo h($s['crop_type']); ?> (<?php echo h($s['start_date']); ?>)</option><?php endforeach; ?>
+                <select name="season_id" id="lr_season" class="form-select" required>
+                    <?php foreach ($seasonList as $s): ?><option value="<?php echo $s['id']; ?>" data-crop="<?php echo h($s['crop_type']); ?>"><?php echo h($s['crop_type']); ?> (<?php echo h($s['start_date']); ?>)</option><?php endforeach; ?>
                 </select>
             </div>
             <div class="row g-2">
-                <div class="col-4"><label class="form-label">Soil Moisture %</label><input type="number" step="0.01" class="form-control" name="soil_moisture" required></div>
-                <div class="col-4"><label class="form-label">Temp °C</label><input type="number" step="0.01" class="form-control" name="temperature" required></div>
-                <div class="col-4"><label class="form-label">Humidity %</label><input type="number" step="0.01" class="form-control" name="humidity" required></div>
+                <div class="col-4"><label class="form-label">Soil Moisture %</label><input type="number" step="0.01" min="0" max="100" class="form-control" name="soil_moisture" id="lr_m" placeholder="0-100" required><div class="form-text" id="lr_mh"></div></div>
+                <div class="col-4"><label class="form-label">Temp °C</label><input type="number" step="0.01" min="-20" max="60" class="form-control" name="temperature" id="lr_t" placeholder="-20 to 60" required><div class="form-text" id="lr_th"></div></div>
+                <div class="col-4"><label class="form-label">Humidity %</label><input type="number" step="0.01" min="0" max="100" class="form-control" name="humidity" id="lr_h" placeholder="0-100" required><div class="form-text" id="lr_hh"></div></div>
             </div>
+            <div class="mt-3" id="lr_out"></div>
+            <p class="small text-muted mt-2 mb-0">Use real sensor values, not guesses. <a href="health_guide.php" target="_blank">Open the guide</a>.</p>
         </div>
         <div class="modal-footer"><button class="btn btn-agri" type="submit">Submit Reading</button></div>
     </form>
@@ -183,9 +286,9 @@ $chartData = array_reverse($readingRows);
         <input type="hidden" name="reading_id" id="er_id">
         <div class="modal-header"><h5 class="modal-title">Edit Reading</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
         <div class="modal-body"><div class="row g-2">
-            <div class="col-4"><label class="form-label">Soil Moisture %</label><input type="number" step="0.01" class="form-control" name="soil_moisture" id="er_m" required></div>
-            <div class="col-4"><label class="form-label">Temp °C</label><input type="number" step="0.01" class="form-control" name="temperature" id="er_t" required></div>
-            <div class="col-4"><label class="form-label">Humidity %</label><input type="number" step="0.01" class="form-control" name="humidity" id="er_h" required></div>
+            <div class="col-4"><label class="form-label">Soil Moisture %</label><input type="number" step="0.01" class="form-control" name="soil_moisture" id="er_m" min="0" max="100" required></div>
+            <div class="col-4"><label class="form-label">Temp °C</label><input type="number" step="0.01" class="form-control" name="temperature" id="er_t" min="-20" max="60" required></div>
+            <div class="col-4"><label class="form-label">Humidity %</label><input type="number" step="0.01" class="form-control" name="humidity" id="er_h" min="0" max="100" required></div>
         </div></div>
         <div class="modal-footer"><button class="btn btn-agri" type="submit">Save</button></div>
     </form>
@@ -203,17 +306,18 @@ function openEditReading(r) {
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
-const labels = <?php echo json_encode(array_map(fn($r)=>date('m-d H:i', strtotime($r['recorded_at'])), $chartData)); ?>;
+const labels = <?php echo json_encode(array_map(fn($r)=>date('H:i', strtotime($r['recorded_at'])), $chartData)); ?>;
 const moisture = <?php echo json_encode(array_map(fn($r)=>(float)$r['soil_moisture'], $chartData)); ?>;
 const temp = <?php echo json_encode(array_map(fn($r)=>(float)$r['temperature'], $chartData)); ?>;
 const humidity = <?php echo json_encode(array_map(fn($r)=>(float)$r['humidity'], $chartData)); ?>;
 
-new Chart(document.getElementById('trendChart'), {
+const tc = document.getElementById('trendChart');
+if (tc) new Chart(tc, {
     type: 'line',
     data: {
         labels: labels,
         datasets: [
-            { label: 'Soil Moisture %', data: moisture, borderColor: '#2E7D32', tension: 0.3 },
+            { label: 'Soil Moisture %', data: moisture, borderColor: '#2E7D32', tension: 0.3, pointRadius: 3 },
             { label: 'Temperature °C', data: temp, borderColor: '#d32f2f', tension: 0.3 },
             { label: 'Humidity %', data: humidity, borderColor: '#0288d1', tension: 0.3 },
         ]
@@ -222,4 +326,15 @@ new Chart(document.getElementById('trendChart'), {
 });
 </script>
 
+<script src="assets/health_preview.js"></script>
+<script>
+initHealthPreview({
+    inputs: { m: 'lr_m', t: 'lr_t', h: 'lr_h' },
+    hints: { soil_moisture: 'lr_mh', temperature: 'lr_th', humidity: 'lr_hh' },
+    output: 'lr_out',
+    cropEl: 'lr_season'
+});
+</script>
+<script src="assets/autorefresh.js"></script>
+<script>initAutoRefresh({seconds: 10});</script>
 <?php include 'includes/footer.php'; ?>

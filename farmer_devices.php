@@ -35,7 +35,7 @@ if (isset($_GET['delete'])) {
     exit();
 }
 
-$devices = $conn->query("SELECT * FROM iot_devices WHERE farmer_id=$farmer_id ORDER BY id DESC");
+$devices = $conn->query("SELECT d.*, " . DEVICE_SECS_SQL . " AS secs_since FROM iot_devices d WHERE d.farmer_id=$farmer_id ORDER BY d.id DESC");
 ?>
 <div class="container my-5">
     <div class="d-flex justify-content-between align-items-center mb-4">
@@ -54,10 +54,11 @@ $devices = $conn->query("SELECT * FROM iot_devices WHERE farmer_id=$farmer_id OR
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-start">
                         <h5 class="fw-bold"><i class="fa-solid fa-wifi me-2"></i>Node #<?php echo $d['id']; ?></h5>
-                        <span class="badge bg-<?php echo $d['status']=='online'?'success':($d['status']=='maintenance'?'warning text-dark':'secondary'); ?>"><?php echo h($d['status']); ?></span>
+                        <?php $ds = device_status($d['status'], $d['secs_since']); ?><span class="badge <?php echo $ds['class']; ?>"><?php echo h($ds['label']); ?></span>
                     </div>
                     <p class="mb-1"><strong>MAC:</strong> <code><?php echo h($d['mac_address']); ?></code></p>
-                    <p class="text-muted small mb-3">Installed: <?php echo h($d['installation_date']); ?></p>
+                    <p class="text-muted small mb-1">Installed: <?php echo h($d['installation_date']); ?></p>
+                    <p class="small mb-3"><i class="fa-regular fa-clock me-1"></i>Last reading: <strong><?php echo h(secs_ago($d['secs_since'])); ?></strong></p>
                     <div class="d-flex gap-2">
                         <button class="btn btn-sm btn-outline-primary flex-fill" onclick='openEdit(<?php echo json_encode($d); ?>)'><i class="fa-solid fa-pen"></i> Edit</button>
                         <a href="farmer_seasons.php" class="btn btn-sm btn-outline-info flex-fill"><i class="fa-solid fa-calendar"></i> Assign Season</a>
